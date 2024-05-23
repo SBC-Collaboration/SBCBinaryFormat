@@ -34,7 +34,7 @@ concept is_arithmetic_ptr = std::is_arithmetic_v<
                              std::remove_pointer_t<T>>> and not std::is_pointer_v<T>;
 
 template<typename... T>
-concept is_arithmetic_ptr_unpack = requires(T x) {
+concept is_arithmetic_ptr_unpack = requires(T... x) {
     (... and is_arithmetic_ptr<T>);
 };
 

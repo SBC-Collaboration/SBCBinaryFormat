@@ -9,7 +9,7 @@ To install this library, there are two options:
 2. Clone this github repository anywhere in your project and in your
    "CMakeLists.txt" add a line called `add_subdirectory
    (LOCATION_OF_THIS_LIBRARY)`. Then, in `target_link_libraries` add
-   `RedDigitizer++::RedDigitizer++`. Done!
+   `SBCBinaryFormat::SBCBinaryFormat`. Done!
 
 # Examples
 

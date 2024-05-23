@@ -10,7 +10,7 @@
 
 // my includes
 #include "SBCBinaryFormat/Reader.hpp"
-#include "SBCBinaryFormat/Writers.hpp"
+#include "SBCBinaryFormat/Writer.hpp"
 
 using namespace SBC::BinaryFormat;
 
