@@ -174,7 +174,6 @@ Reducing until reasonable.")
 
         if self.__data is None:
             self.__data = dict.fromkeys(self.columns)
-            # self.__data = pd.DataFrame()
             for name, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
                 self.__data[name] = ()
                 if len(sizes) > 1:
@@ -258,6 +257,13 @@ Reducing until reasonable.")
             return self.__data[indexes]
 
         return np.array([self.__getitem(i) for i in indexes])
+
+    def to_dict(self):
+        ret = {}
+        # remove dimensions of size 1
+        for key, value in self.__data.items():
+            ret[key] = np.squeeze(value)
+        return ret
 
 
 class Writer:
@@ -389,7 +395,7 @@ expected sizes")
                                              dtype=np.uint16,
                                              count=1)[0]
 
-            print(self.header_length)
+            print(f"Header length: {self.header_length}")
 
             header = file.read(self.header_length).decode('ascii')
             header = header.split(';')
@@ -442,6 +448,9 @@ def sbcstring_to_type(type_str, endianess):
     elif endianess == 'big':
         out_type_str += '>'
 
+    if type_str.startswith('string'):
+        return np.dtype(out_type_str+type_str.replace("string", "U"))
+
     string_to_type = {'char': 'i1',
                       'int8': 'i1',
                       'int16': 'i2',
@@ -461,6 +470,9 @@ def sbcstring_to_type(type_str, endianess):
 
 
 def type_to_sbcstring(sbc_type_str):
+    if sbc_type_str.startswith("U"):
+        return sbc_type_str.replace("U", "string")
+
     string_to_type = {'i1': 'int8',
                       'i2': 'int16',
                       'i4': 'int32',
@@ -474,10 +486,3 @@ def type_to_sbcstring(sbc_type_str):
                       'f16': 'float128'}
 
     return string_to_type[sbc_type_str]
-
-# with SBCWriteBinary("test.bin", ("a", "b"), ('i1', 'i2'), [[1], [1]]) as out:
-#     print(out.columns, out.dtypes, out.sizes)
-#     out.write({'a': [0], 'b': [2]})
-
-# with SBCReadBinaryStreamer('test.bin') as data:
-#     print(data.columns, data.dtypes, data.sizes)
