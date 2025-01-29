@@ -8,7 +8,6 @@ Very simplistic and does not have any multiprocessing features.
 """
 import sys
 import os
-
 import numpy as np
 
 
@@ -486,3 +485,37 @@ def type_to_sbcstring(sbc_type_str):
                       'f16': 'float128'}
 
     return string_to_type[sbc_type_str]
+
+if __name__ == "__main__":
+    # Writer example
+    with Writer(
+        "example.sbc.bin",
+        ["t", "x", "y", "z", "momentum", "source"],
+        ['i4', 'd', 'd', 'd', 'd', "U100"],
+        [[1], [1], [1], [1], [3, 2], [1]]) as example_writer:
+
+        example_writer.write({
+            't': [1],
+            'x': [2.0],
+            'y': [3.0],
+            'z': [4.0],
+            'momentum': [[1, 2], [4, 5], [7, 8]],
+            'source': ["Bg"]})
+
+        rng = np.random.default_rng()
+
+        for _ in range(128):
+            example_writer.write({
+                't': rng.integers(-10, 10, (1)),
+                'x': rng.random((1)),
+                'y': rng.random((1)),
+                'z': rng.random((1)),
+                'momentum': rng.random((3, 2)),
+                'source': rng.choice(["Bg", "Co-60", "Th-228", "Sb-124"], (1))})
+    
+    # Reader example
+    example_streamer = Streamer("example.sbc.bin")
+    data_dict = example_streamer.to_dict()
+    for key, value in data_dict.items():
+        print(f"key: {key}\t shape: {value.shape}")
+        print(value[:10])
