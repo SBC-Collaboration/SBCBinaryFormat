@@ -1,2 +1,4 @@
 .idea
 *debug*
+build
+*.egg-info
