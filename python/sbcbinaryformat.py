@@ -339,42 +339,49 @@ and sizes ({sizes})")
 
         # Convert each column’s data to a NumPy array.
         arrays = {}
-        nrows = None
+        nrows_list = []
         for k in keylist:
-            a = np.asarray(data[k])
+            # data_column
+            dcol = np.asarray(data[k])
             # remove all dimensions of size 1
-            a = np.squeeze(a)
-            # If a is a scalar, make it a one-element array.
-            if a.ndim == 0:
-                a = np.array([a])
+            dcol = np.squeeze(dcol)
+            # If dcol is a scalar, make it a one-element array.
+            if dcol.ndim == 0:
+                dcol = np.array([dcol])
             # For columns expected to be scalars (sizes == [1]), squeeze extra dimensions.
             idx = keylist.index(k)
             exp_size = self.sizes[idx]
-            real_size = list(a.shape)
+            real_size = list(dcol.shape)
             
-            a_rows = 0 # number of rows in this column
             # check if the sizes are compatible
             # if exp_size is [a, b, ...]
             # a must have shape [a, b, ...] or [nrows, a, b, ...]
             # if exp_size is [1]
-            # a must have shape [1] or [nrows]
+            # dcol must have shape [1] or [nrows]
             if real_size == exp_size:
                 # if there is only one row, and the size is the same
-                a_rows = 1
+                nrows_list.append(1)
             elif real_size[1:] == exp_size:
                 # if after removing first dim, the sizes is same
-                a_rows = real_size[0]
+                nrows_list.append(real_size[0])
             elif exp_size == [1] and len(real_size) == 1:
                 # if the size is [1] and the shape is [nrows]
-                a_rows = real_size[0]
+                nrows_list.append(real_size[0])
             else: raise ValueError(f"Data for column '{k}' has unexpected shape {real_size}, expected {exp_size}.")
 
-            # check if number of rows are the same
-            if nrows is None:
-                nrows = a_rows
-            elif a_rows != nrows:
-                raise ValueError("All columns must have the same number of rows.")
-            arrays[k] = a
+        # check if number of rows for each column is consistent
+        # they should all be the same or is 1
+        nrows = max(nrows_list)
+        if not all(nrows == x or x == 1 for x in nrows_list):
+            raise ValueError("All columns must have the same number of rows.")
+        else:
+            for idx in range(len(nrows_list)):
+                k = keylist[idx]
+                exp_size = self.sizes[idx]
+                if nrows_list[idx] == 1:
+                    arrays[k] = np.broadcast_to(data[k], (nrows,) +tuple(exp_size))
+                else:
+                    arrays[k] = data[k]
 
         # Build a structured dtype for one row.
         # For each column, if the expected size is [1] we treat it as a scalar;
@@ -574,7 +581,7 @@ if __name__ == "__main__":
 
         data = {
             't': rng.integers(-10, 10, (n_lines)),
-            'x': rng.random((n_lines)),
+            'x': 2,
             'y': rng.random((n_lines)),
             'z': rng.random((n_lines)),
             'momentum': rng.random((n_lines, 3, 2)),
@@ -587,4 +594,4 @@ if __name__ == "__main__":
     data_dict = example_streamer.to_dict()
     for key, value in data_dict.items():
         print(f"key: {key}\t shape: {value.shape}")
-        print(value[:10])
+        print(value[-10:])

@@ -49,11 +49,11 @@ data = {
     'source': ["Bg"]}
 example_writer.write(data)
 ```
-Each `Writer.write()` call can write a dictionary with multiple lines, or a list of dictionaries. The first dimension (the number of rows) of each value in the dictionary needs to be the same across all columns. The rest of the dimension needs to match the dimension defined by `sizes` in the initialization. If any dimension has shape 1, it will be squeezed.
+Each `Writer.write()` call can write a dictionary with multiple lines, or a list of dictionaries. The first dimension (the number of rows) of each value in the dictionary needs to be the same across all columns. The rest of the dimension needs to match the dimension defined by `sizes` in the initialization. If any dimension has shape 1, it will be squeezed. If the shape of one column is 1, it can be broadcast to fit the shape of other columns.
 ```python
 data = {
     't': [1, 2, 3],
-    'x': [2.0, 3.0, 2.5],
+    'x': 2.0,
     'y': [3.0, 2.0, 1.0],
     'z': [4.0, 4.0, 4.0],
     'momentum': [
