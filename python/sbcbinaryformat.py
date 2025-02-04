@@ -29,7 +29,7 @@ class Streamer:
         """
         self.__data = None
         self.__binary_data = None
-        self.system_edianess = sys.byteorder
+        self.system_endianess = sys.byteorder
         self.file_size = os.path.getsize(file) / 1e6
         self.is_all_in_ram = self.file_size < max_size
 
@@ -39,11 +39,12 @@ class Streamer:
         # Read the constants from the file
         # First its Endianess
         file_endianess = np.fromfile(self.file_resource,
-                                     dtype=np.uint32, count=1)
-
+                                     dtype=np.uint32, count=1)[0]
         if file_endianess == 0x01020304:
+            print("little")
             self.file_endianess = "little"
         elif file_endianess == 0x04030201:
+            print("big")
             self.file_endianess = "big"
         else:
             raise OSError(f"Endianess not supported: {file_endianess}")
