@@ -341,18 +341,38 @@ and sizes ({sizes})")
         arrays = {}
         nrows = None
         for k in keylist:
-            a = np.array(data[k], copy=False)
+            a = np.asarray(data[k])
+            # remove all dimensions of size 1
+            a = np.squeeze(a)
             # If a is a scalar, make it a one-element array.
             if a.ndim == 0:
                 a = np.array([a])
             # For columns expected to be scalars (sizes == [1]), squeeze extra dimensions.
             idx = keylist.index(k)
-            expected_sizes = self.sizes[idx]
-            if expected_sizes == [1] and a.ndim > 1:
-                a = np.squeeze(a)
+            exp_size = self.sizes[idx]
+            real_size = list(a.shape)
+            
+            a_rows = 0 # number of rows in this column
+            # check if the sizes are compatible
+            # if exp_size is [a, b, ...]
+            # a must have shape [a, b, ...] or [nrows, a, b, ...]
+            # if exp_size is [1]
+            # a must have shape [1] or [nrows]
+            if real_size == exp_size:
+                # if there is only one row, and the size is the same
+                a_rows = 1
+            elif real_size[1:] == exp_size:
+                # if after removing first dim, the sizes is same
+                a_rows = real_size[0]
+            elif exp_size == [1] and len(real_size) == 1:
+                # if the size is [1] and the shape is [nrows]
+                a_rows = real_size[0]
+            else: raise ValueError(f"Data for column '{k}' has unexpected shape {real_size}, expected {exp_size}.")
+
+            # check if number of rows are the same
             if nrows is None:
-                nrows = a.shape[0]
-            elif a.shape[0] != nrows:
+                nrows = a_rows
+            elif a_rows != nrows:
                 raise ValueError("All columns must have the same number of rows.")
             arrays[k] = a
 
@@ -549,16 +569,18 @@ if __name__ == "__main__":
             'momentum': [[1, 2], [4, 5], [7, 8]],
             'source': ["Bg"]})
 
+        n_lines = 10
         rng = np.random.default_rng()
 
-        for _ in range(128):
-            example_writer.write({
-                't': rng.integers(-10, 10, (1)),
-                'x': rng.random((1)),
-                'y': rng.random((1)),
-                'z': rng.random((1)),
-                'momentum': rng.random((3, 2)),
-                'source': rng.choice(["Bg", "Co-60", "Th-228", "Sb-124"], (1))})
+        data = {
+            't': rng.integers(-10, 10, (n_lines)),
+            'x': rng.random((n_lines)),
+            'y': rng.random((n_lines)),
+            'z': rng.random((n_lines)),
+            'momentum': rng.random((n_lines, 3, 2)),
+            'source': rng.choice(["Bg", "Co-60", "Th-228", "Sb-124"], (n_lines))}
+        
+        example_writer.write(data)
     
     # Reader example
     example_streamer = Streamer("example.sbc.bin")

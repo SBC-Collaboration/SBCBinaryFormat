@@ -40,16 +40,16 @@ example_writer = Writer(file_name, column_names, data_types, sizes)
 ```
 Then prepare data into a dictionary, matching the description provided above. Use `Writer.write()` to write the data to file. If the files doesn't exist, it will be created. Writing multiple times will append to the end of file.
 ```python
-data_line = {
+data = {
     't': [1],
     'x': [2.0],
     'y': [3.0],
     'z': [4.0],
     'momentum': [[1, 2], [4, 5], [7, 8]],
     'source': ["Bg"]}
-example_writer.write(data_line)
+example_writer.write(data)
 ```
-Each `Writer.write()` call can only write one line of data in the form of a dictionary. If the data is in a dictionary format that each value in the dictionary is a list or numpy array, a separate data_line dictionary may need to be constructed for each call.
+Each `Writer.write()` call can write a dictionary with multiple lines, or a list of dictionaries. The first dimension (the number of rows) of each value in the dictionary needs to be the same across all columns. The rest of the dimension needs to match the dimension defined by `sizes` in the initialization. If any dimension has shape 1, it will be squeezed.
 ```python
 data = {
     't': [1, 2, 3],
@@ -61,19 +61,7 @@ data = {
         [[1, 1], [2, 2], [3, 3]],
         [[3, 3], [2, 2], [1, 1]]],
     'source': ["Bg", "Th-228", "Th-228"]}
-
-data_line = {}
-for i in range(3):
-    for key, value in data.items():
-        data_line[key] = [value[i]]
-    example_writer.write(data_line)
-```
-To make sure that the writer writes data to file in a timely manner to prevent data loss, it is recommended to initialize within a context manager. 
-```python
-with Writer(file_name, column_names, data_types, sizes) as example_writer:
-    for _ in range(data_size):
-        data_line = ...
-        example_writer.write(data_line)
+example_writer.write(data)
 ```
 
 ### Reader example
