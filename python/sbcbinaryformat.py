@@ -318,29 +318,76 @@ and sizes ({sizes})")
         """
         self.file_resource.close()
 
-    def write(self, data_line):
+    def write(self, data):
         """
-        Write data_line to the file.
+        Write multi line data to file.
 
-        :raises ValueError: if data_line is not a dictionary, the keys or
-        lengths do not match the columns of the file.
+        :raises Value Error: if data is not a dictioanry or a list of dictionaries
+        or keys or lengths do not match columns of the file,
+        or dimensions of values cannot be broadcasted to sizes.
         """
-        if not isinstance(data_line, dict):
-            raise ValueError("data must be a dictionary")
+        if isinstance(data, list):
+            for d in data:
+                self.write(d)
+            return
 
-        if (list(data_line) != self.columns).all():
-            raise ValueError(f'Data keys must match the column types. This  \
-                file columns names : {self.columns}, the data provided keys : \
-                {list(data_line)}')
+        # At this point, data is assumed to be a dictionary.
+        keylist = list(self.columns)
+        if list(data.keys()) != keylist:
+            raise ValueError(f"Data keys must match the file's column names: {keylist}, "
+                            f"but got {list(data.keys())}")
 
-        sizes = [list(np.array(value).shape) for _, value in data_line.items()]
-        if not self.__check_sizes(sizes):
-            raise ValueError("Data passed is not the length of the \
-expected sizes")
+        # Convert each column’s data to a NumPy array.
+        arrays = {}
+        nrows = None
+        for k in keylist:
+            a = np.array(data[k], copy=False)
+            # If a is a scalar, make it a one-element array.
+            if a.ndim == 0:
+                a = np.array([a])
+            # For columns expected to be scalars (sizes == [1]), squeeze extra dimensions.
+            idx = keylist.index(k)
+            expected_sizes = self.sizes[idx]
+            if expected_sizes == [1] and a.ndim > 1:
+                a = np.squeeze(a)
+            if nrows is None:
+                nrows = a.shape[0]
+            elif a.shape[0] != nrows:
+                raise ValueError("All columns must have the same number of rows.")
+            arrays[k] = a
 
-        for column_name, dtype, _ in zip(self.columns, self.dtypes, self.sizes):
-            np.array(data_line[column_name],
-                     dtype=dtype).tofile(self.file_resource)
+        # Build a structured dtype for one row.
+        # For each column, if the expected size is [1] we treat it as a scalar;
+        # otherwise we use a subarray field.
+        fields = []
+        for k, col_dtype, col_sizes in zip(keylist, self.dtypes, self.sizes):
+            np_dtype = np.dtype(col_dtype)
+            if col_sizes == [1]:
+                fields.append((k, np_dtype))
+            else:
+                fields.append((k, np_dtype, tuple(col_sizes)))
+        # Ensure there is no padding between fields.
+        rec_dtype = np.dtype(fields, align=False)
+
+        # Create a structured array for all rows.
+        rec = np.empty(nrows, dtype=rec_dtype)
+        for k in keylist:
+            idx = keylist.index(k)
+            expected_sizes = self.sizes[idx]
+            if expected_sizes == [1]:
+                expected_shape = (nrows,)
+            else:
+                expected_shape = (nrows,) + tuple(expected_sizes)
+            if arrays[k].shape != expected_shape:
+                try:
+                    arrays[k] = arrays[k].reshape(expected_shape)
+                except Exception as e:
+                    raise ValueError(f"Data for column '{k}' cannot be reshaped to {expected_shape}") from e
+            rec[k] = arrays[k]
+
+        # Write the entire block at once.
+        rec.tofile(self.file_resource)
+        self.num_elems_saved += nrows
 
     def __create_header(self, file_name, columns_names, dtypes, sizes):
         self.file_resource = open(file_name, 'wb')
