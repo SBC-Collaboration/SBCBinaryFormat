@@ -17,11 +17,11 @@ class Streamer:
         If a file is too  big to save into RAM, this code will manage the
         reading into a more tolerable internal buffer.
     """
-    def __init__(self, file, block_size=65536, max_size=1000):
+    def __init__(self, file, block_size=65536, max_size=1000000000):
         """
         :param file: File location and name
         :param blocksize: Size in lines of the internal buffer
-        :param max_size: Max size of the file that will be directly loaded
+        :param max_size: Max size in bytes of the file that will be directly loaded
                          into RAM. Beyond this value the streamer will default
                          to a block style of reading.
         :raises OSError: if Endianess is not supported, if the header is
@@ -30,7 +30,7 @@ class Streamer:
         self.__data = None
         self.__binary_data = None
         self.system_endianess = sys.byteorder
-        self.file_size = os.path.getsize(file) / 1e6
+        self.file_size = os.path.getsize(file)
         self.is_all_in_ram = self.file_size < max_size
 
         # This will throw if the file is not found
@@ -48,8 +48,7 @@ class Streamer:
             raise OSError(f"Endianess not supported: {file_endianess}")
 
         # Now the length of the header
-        self.header_length = np.fromfile(self.file_resource,
-                                         dtype=np.uint16, count=1)[0]
+        self.header_length = int(np.fromfile(self.file_resource, dtype=np.uint16, count=1)[0])
 
         header = self.file_resource.read(self.header_length).decode('ascii')
         header = header.split(';')
@@ -71,32 +70,30 @@ class Streamer:
                                               dtype=np.int32, count=1)[0]
 
         # 4 for endianess, 2 for header length and 4 for num elems
-        self.header_size_in_bytes = self.header_length + 10
+        self.header_size = self.header_length + 10
         # Address in the file where the data starts
-        self.__start_data = self.header_size_in_bytes
+        self.__start_data = self.header_size
         # Address in the file where data ends
         self.__end_data = self.file_size
 
-        header_size_in_megbytes = self.header_size_in_bytes*1e-6
         # We need to calculate how many elements are in the file
         bytes_each = [dtype.itemsize*np.prod(sizes) for i, (dtype, sizes)
                       in enumerate(zip(self.dtypes, self.sizes))]
 
-        self.line_size_in_bytes = np.sum(bytes_each)
-        line_size_in_megbytes = self.line_size_in_bytes*1.0e-6
+        self.line_size = np.sum(bytes_each)
 
-        self.num_elems = self.file_size - header_size_in_megbytes
+        self.payload_size = self.file_size - self.header_size
         # TODO(Any): this check has a lot of flaws... float rounding errors
         # mess this up. Solution: check to integers and deal with bytes
-        if self.num_elems % line_size_in_megbytes > 1e-3:
+        if self.payload_size % self.line_size != 0:
             raise OSError(f"""After doing the math, the remaining file is
 not evenly distributed by the given parameters.
 Header or data written incorrectly.
-- Header size = {header_size_in_megbytes} MB.
-- File size = {self.file_size } MB.
-- Expected line size = {line_size_in_megbytes} MB""")
+- Header size = {header_size:,} Bytes.
+- File size = {self.file_size:,} Bytes.
+- Expected line size = {self.line_size:,} Bytes""")
 
-        self.num_elems = int(self.num_elems / line_size_in_megbytes)
+        self.num_elems = int(self.payload_size / self.line_size)
 
         if self.expected_num_elems != 0:
             if self.num_elems != self.expected_num_elems:
@@ -104,21 +101,20 @@ Header or data written incorrectly.
                                 {self.expected_num_elems}, does not match \
                                 the calculated number of element in file: \
                                 {self.num_elems}")
-
-        if (block_size * line_size_in_megbytes) > max_size:
+        if (block_size * self.line_size) > max_size:
             print(f"Warning: Block size  \
-({block_size * line_size_in_megbytes}MB) is bigger than the amount of memory \
-this streamer can allocate which is equal to {max_size}MB. \
+({block_size * self.line_size:,} Bytes) is bigger than the amount of memory \
+this streamer can allocate which is equal to {max_size:,} Bytes. \
 Reducing until reasonable.")
 
         if self.is_all_in_ram:
             self.block_size = self.num_elems
         else:
             self.block_size = block_size
-            while (self.block_size * line_size_in_megbytes) > max_size:
+            while (self.block_size * self.line_size) > max_size:
                 self.block_size = int(0.5*self.block_size)
 
-            print(f"Final block size = {self.block_size}")
+            print(f"Final block size = {self.block_size:,}")
 
         self.__create_df()
 
@@ -150,7 +146,7 @@ Reducing until reasonable.")
         position_in_array = 0
         for name, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
             length = dtype.itemsize*np.prod(sizes)
-            s_index = position_in_array + i*self.line_size_in_bytes
+            s_index = position_in_array + i*self.line_size
             e_index = length + s_index
             if len(sizes) > 1:
                 self.__data[name][i] \
@@ -168,7 +164,7 @@ Reducing until reasonable.")
         df_dtypes = {}
         if self.__binary_data is None:
             self.__binary_data = np.zeros(
-                self.line_size_in_bytes*self.block_size, dtype=np.uint8)
+                self.line_size*self.block_size, dtype=np.uint8)
 
         if self.__data is None:
             self.__data = dict.fromkeys(self.columns)
@@ -184,7 +180,7 @@ Reducing until reasonable.")
                                                  dtype=dtype)
 
     def __get_row(self, i):
-        return i*self.line_size_in_bytes + self.header_size_in_bytes
+        return i*self.line_size + self.header_size
 
     def __set_line_file(self, i):
         self.file_resource.seek(self.__get_row(i))
@@ -194,20 +190,20 @@ Reducing until reasonable.")
             Loads data at self.__current_line
         """
         self.__set_line_file(self.__current_line)
-        start_in_bytes = self.file_resource.tell()
+        start = self.file_resource.tell()
 
         self.__binary_data = np.fromfile(self.file_resource, dtype=np.uint8,
-                                         count=self.line_size_in_bytes
+                                         count=self.line_size
                                          * self.block_size)
 
-        end_in_bytes = self.file_resource.tell()
+        end = self.file_resource.tell()
 
-        lines_moved = end_in_bytes - start_in_bytes
-        lines_moved = lines_moved / self.line_size_in_bytes
+        lines_moved = end - start
+        lines_moved = lines_moved / self.line_size
 
         if int(lines_moved) != lines_moved:
             raise ValueError(f'File did not moved an integer value of \
-{self.line_size_in_bytes}')
+{self.line_size}')
 
         lines_moved = int(lines_moved)
 
@@ -372,7 +368,8 @@ and sizes ({sizes})")
         # they should all be the same or is 1
         nrows = max(nrows_list)
         if not all(nrows == x or x == 1 for x in nrows_list):
-            raise ValueError("All columns must have the same number of rows.")
+            sizes_dict = {str(k): v for k, v in zip(keylist, nrows_list)}
+            raise ValueError(f"All columns must have the same number of rows. Got sizes {sizes_dict}")
         else:
             for idx in range(len(nrows_list)):
                 k = keylist[idx]
