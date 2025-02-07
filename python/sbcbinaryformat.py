@@ -41,10 +41,8 @@ class Streamer:
         file_endianess = np.fromfile(self.file_resource,
                                      dtype=np.uint32, count=1)[0]
         if file_endianess == 0x01020304:
-            print("little")
             self.file_endianess = "little"
         elif file_endianess == 0x04030201:
-            print("big")
             self.file_endianess = "big"
         else:
             raise OSError(f"Endianess not supported: {file_endianess}")
@@ -468,8 +466,6 @@ and sizes ({sizes})")
             self.header_length = np.fromfile(file,
                                              dtype=np.uint16,
                                              count=1)[0]
-
-            print(f"Header length: {self.header_length}")
 
             header = file.read(self.header_length).decode('ascii')
             header = header.split(';')
