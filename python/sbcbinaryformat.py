@@ -13,251 +13,77 @@ import numpy as np
 
 class Streamer:
     """
-        This class specializes in opening and managing a sbc-binary file.
-        If a file is too  big to save into RAM, this code will manage the
-        reading into a more tolerable internal buffer.
+    This class manages opening a sbc binary file. It reads the header and 
+    saves data into a dictionary of numpy arrays.
     """
-    def __init__(self, file, block_size=65536, max_size=1000000000):
-        """
-        :param file: File location and name
-        :param blocksize: Size in lines of the internal buffer
-        :param max_size: Max size in bytes of the file that will be directly loaded
-                         into RAM. Beyond this value the streamer will default
-                         to a block style of reading.
-        :raises OSError: if Endianess is not supported, if the header is
-                         not consistent or contents do not match the header.
-        """
-        self.__data = None
-        self.__binary_data = None
+    def __init__(self, file, max_size=1000000000):
         self.system_endianess = sys.byteorder
         self.file_size = os.path.getsize(file)
+        self.file = file
         self.is_all_in_ram = self.file_size < max_size
 
-        # This will throw if the file is not found
-        self.file_resource = open(file, "rb")
+        # Read header info
+        with open(file, "rb") as f:
+            # Read and check endianess
+            file_endianess_val = np.fromfile(f, dtype=np.uint32, count=1)[0]
+            if file_endianess_val == 0x01020304:
+                self.file_endianess = "little"
+            elif file_endianess_val == 0x04030201:
+                self.file_endianess = "big"
+            else:
+                raise OSError(f"Endianess not supported: {file_endianess_val}")
 
-        # Read the constants from the file
-        # First its Endianess
-        file_endianess = np.fromfile(self.file_resource,
-                                     dtype=np.uint32, count=1)[0]
-        if file_endianess == 0x01020304:
-            self.file_endianess = "little"
-        elif file_endianess == 0x04030201:
-            self.file_endianess = "big"
-        else:
-            raise OSError(f"Endianess not supported: {file_endianess}")
+            # Read header length and header string
+            self.header_length = int(np.fromfile(f, dtype=np.uint16, count=1)[0])
+            header = f.read(self.header_length).decode('ascii')
+            header_items = header.split(';')[:-1]  # last element is empty
 
-        # Now the length of the header
-        self.header_length = int(np.fromfile(self.file_resource, dtype=np.uint16, count=1)[0])
+            if len(header_items) % 3 != 0:
+                raise OSError("Header format error: items not in multiples of 3")
 
-        header = self.file_resource.read(self.header_length).decode('ascii')
-        header = header.split(';')
+            num_columns = len(header_items) // 3
+            self.columns = []
+            self.dtypes = []
+            self.sizes = []
+            for i in range(num_columns):
+                name = header_items[i * 3]
+                type_str = header_items[i * 3 + 1]
+                size_str = header_items[i * 3 + 2]
+                self.columns.append(name)
+                self.dtypes.append(sbcstring_to_type(type_str, self.file_endianess))
+                self.sizes.append(list(map(int, size_str.split(','))))
 
-        if (len(header) - 1) % 3 != 0:
-            raise OSError(f"The number of items found in the header should \
-                always come in multiples of 3. It is {len(header) - 1}")
+            # Read the expected number of elements (can be 0 if unknown)
+            self.expected_num_elems = np.fromfile(f, dtype=np.int32, count=1)[0]
+            self.header_size = f.tell()
 
-        self.num_columns = int(len(header) / 3)
-        header = np.resize(header, (self.num_columns, 3))
+        # Create a structured dtype from the header info
+        fields = []
+        for col, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
+            # If sizes is [1], store as scalar; otherwise as a subarray.
+            if sizes == [1]:
+                fields.append((col, dtype))
+            else:
+                fields.append((col, dtype, tuple(sizes)))
+        self.row_dtype = np.dtype(fields)
 
-        self.columns = header[:, 0]
-        self.dtypes = [sbcstring_to_type(type_s, self.file_endianess)
-                       for type_s in header[:, 1]]
-        self.sizes = [[int(lenght) for lenght in length.split(',')]
-                      for length in header[:, 2]]
-
-        self.expected_num_elems = np.fromfile(self.file_resource,
-                                              dtype=np.int32, count=1)[0]
-
-        # 4 for endianess, 2 for header length and 4 for num elems
-        self.header_size = self.header_length + 10
-        # Address in the file where the data starts
-        self.__start_data = self.header_size
-        # Address in the file where data ends
-        self.__end_data = self.file_size
-
-        # We need to calculate how many elements are in the file
-        bytes_each = [dtype.itemsize*np.prod(sizes) for i, (dtype, sizes)
-                      in enumerate(zip(self.dtypes, self.sizes))]
-
-        self.line_size = np.sum(bytes_each)
-
+        # Calculate the number of rows by comparing the payload size to the row size.
         self.payload_size = self.file_size - self.header_size
-        # TODO(Any): this check has a lot of flaws... float rounding errors
-        # mess this up. Solution: check to integers and deal with bytes
-        if self.payload_size % self.line_size != 0:
-            raise OSError(f"""After doing the math, the remaining file is
-not evenly distributed by the given parameters.
-Header or data written incorrectly.
-- Header size = {header_size:,} Bytes.
-- File size = {self.file_size:,} Bytes.
-- Expected line size = {self.line_size:,} Bytes""")
+        if self.payload_size % self.row_dtype.itemsize != 0:
+            raise OSError("File payload size does not match structured row size")
+        self.num_elems = self.payload_size // self.row_dtype.itemsize
+        if self.expected_num_elems and self.expected_num_elems != self.num_elems:
+            raise OSError("Expected number of elements does not match calculated number")
 
-        self.num_elems = int(self.payload_size / self.line_size)
+        # Read the data.
+        self.data = np.fromfile(file, dtype=self.row_dtype, offset=self.header_size)
 
-        if self.expected_num_elems != 0:
-            if self.num_elems != self.expected_num_elems:
-                raise OSError(f"Expected number of elements in file, \
-                                {self.expected_num_elems}, does not match \
-                                the calculated number of element in file: \
-                                {self.num_elems}")
-        if (block_size * self.line_size) > max_size:
-            print(f"Warning: Block size  \
-({block_size * self.line_size:,} Bytes) is bigger than the amount of memory \
-this streamer can allocate which is equal to {max_size:,} Bytes. \
-Reducing until reasonable.")
-
-        if self.is_all_in_ram:
-            self.block_size = self.num_elems
-        else:
-            self.block_size = block_size
-            while (self.block_size * self.line_size) > max_size:
-                self.block_size = int(0.5*self.block_size)
-
-            print(f"Final block size = {self.block_size:,}")
-
-        self.__create_df()
-
-        self.__start_line_in_memory = 0
-        self.__end_line_in_memory = 0
-        self.__current_line = 0
-        self.__load_data()
-
-        for column in self.columns:
-            setattr(self, column, self.__data[column])
-
-    def __enter__(self):
-        """
-        This allows the use of with()
-        """
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        """
-        This allows the use of with() and properly closes the resources
-        """
-        self.file_resource.close()
-
-    def __process_line_data(self, i):
-        """
-        Helper function to process the data and save it to the
-        allocated memory
-        """
-        position_in_array = 0
-        for name, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
-            length = dtype.itemsize*np.prod(sizes)
-            s_index = position_in_array + i*self.line_size
-            e_index = length + s_index
-            if len(sizes) > 1:
-                self.__data[name][i] \
-                    = self.__binary_data[s_index:e_index].view(dtype).reshape(sizes)
-            elif len(sizes) == 1:
-                self.__data[name][i] \
-                    = self.__binary_data[s_index:e_index].view(dtype)
-
-            position_in_array += length
-
-    def __create_df(self):
-        """
-        Here is where we allocate the memory for this streamer
-        """
-        df_dtypes = {}
-        if self.__binary_data is None:
-            self.__binary_data = np.zeros(
-                self.line_size*self.block_size, dtype=np.uint8)
-
-        if self.__data is None:
-            self.__data = dict.fromkeys(self.columns)
-            for name, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
-                self.__data[name] = ()
-                if len(sizes) > 1:
-                    df_dtypes[name] = list
-                    sizes = np.append(self.block_size, sizes)
-                    self.__data[name] = np.zeros(sizes, dtype=dtype)
-                elif len(sizes) == 1:
-                    df_dtypes[name] = dtype
-                    self.__data[name] = np.zeros((self.block_size, sizes[0]),
-                                                 dtype=dtype)
-
-    def __get_row(self, i):
-        return i*self.line_size + self.header_size
-
-    def __set_line_file(self, i):
-        self.file_resource.seek(self.__get_row(i))
-
-    def __load_data(self):
-        """
-            Loads data at self.__current_line
-        """
-        self.__set_line_file(self.__current_line)
-        start = self.file_resource.tell()
-
-        self.__binary_data = np.fromfile(self.file_resource, dtype=np.uint8,
-                                         count=self.line_size
-                                         * self.block_size)
-
-        end = self.file_resource.tell()
-
-        lines_moved = end - start
-        lines_moved = lines_moved / self.line_size
-
-        if int(lines_moved) != lines_moved:
-            raise ValueError(f'File did not moved an integer value of \
-{self.line_size}')
-
-        lines_moved = int(lines_moved)
-
-        self.__start_line_in_memory = self.__current_line
-        self.__end_line_in_memory += lines_moved
-        for i in range(lines_moved):
-            self.__process_line_data(i)
-
-    def __len__(self):
-        return self.num_elems
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self.__current_line == self.num_elems:
-            self.__current_line = 0
-            raise StopIteration
-
-        return self.__getitem__(self.__current_line)
-
-    def __getitem(self, i):
-        self.__current_line = i
-        if self.__current_line >= self.__end_line_in_memory or \
-           self.__current_line < self.__start_line_in_memory:
-            # if outside these limits, we dont have that data in memory
-            # we need to load it from the file
-            print("Loading data...")
-            self.__load_data()
-
-        # now, we load the data
-        out = dict.fromkeys(self.columns)
-        internal_index = self.__current_line - self.__start_line_in_memory
-
-        for column in self.columns:
-            out[column] = self.__data[column][internal_index]
-
-        self.__current_line += 1
-        return out
-
-    def __getitem__(self, indexes):
-        if isinstance(indexes, (int, np.integer)):
-            return self.__getitem(indexes)
-        if isinstance(indexes, str):
-            return self.__data[indexes]
-
-        return np.array([self.__getitem(i) for i in indexes])
+    def __getitem__(self, idx):
+        return self.data[idx]
 
     def to_dict(self):
-        ret = {}
-        # remove dimensions of size 1
-        for key, value in self.__data.items():
-            ret[key] = np.squeeze(value)
-        return ret
+        # Convert the structured array into a dictionary for easier access.
+        return {name: self.data[name] for name in self.columns}
 
 
 class Writer:
