@@ -9,6 +9,7 @@ Very simplistic and does not have any multiprocessing features.
 import sys
 import os
 import numpy as np
+from collections import OrderedDict
 
 
 class Streamer:
@@ -83,7 +84,7 @@ class Streamer:
 
     def to_dict(self):
         # Convert the structured array into a dictionary for easier access.
-        return {name: self.data[name] for name in self.columns}
+        return OrderedDict({name: self.data[name] for name in self.columns})
 
 
 class Writer:
