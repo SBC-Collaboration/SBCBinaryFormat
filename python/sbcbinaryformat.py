@@ -10,7 +10,13 @@ import sys
 import os
 import numpy as np
 from collections import OrderedDict
+from importlib.metadata import version, PackageNotFoundError
 
+# expose package version
+try:
+    __version__ = version("sbcbinaryformat")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 class Streamer:
     """
