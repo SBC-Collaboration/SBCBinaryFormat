@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbcbinaryformat"
+version = "0.3.3"
+description = "SBC Binary Format library"
+authors = [{name = "Hector Hawley Herrera"},
+           {name = "Zhiheng Sheng"}]
+dependencies = ["numpy"]
+
+[tool.setuptools]
+py-modules = ["sbcbinaryformat"]
