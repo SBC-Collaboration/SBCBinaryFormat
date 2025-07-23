@@ -60,8 +60,6 @@ class Streamer:
             # Setup for block-based reading
             self.file_handle = open(self.file_name, "rb")
             self.data = None
-            self._cache = {}  # Simple LRU-style cache for blocks
-            self._max_cached_blocks = 3
     
     def _parse_header(self):
         """Parse the SBC binary header to extract column information"""
@@ -115,6 +113,7 @@ class Streamer:
                 raise OSError("File size mismatch with row structure")
             
             self.num_elems = payload_size // self.row_dtype.itemsize
+            self.block_len = min(self.block_len, self.max_size_bytes // self.row_dtype.itemsize)
     
     def _parse_dtype(self, type_str):
         """Convert SBC type string to numpy dtype"""
@@ -163,18 +162,9 @@ class Streamer:
         return np.concatenate(data_parts)
     
     def _get_block_data(self, start, stop):
-        """Get data for a single block with caching"""
-        block_id = start // self.block_len
-        
-        # Check cache first
-        if block_id in self._cache:
-            block_data = self._cache[block_id]
-            local_start = start % self.block_len
-            local_stop = local_start + (stop - start)
-            return block_data[local_start:local_stop]
-        
+        """Get data for a single block"""
         # Load block from file
-        block_start = block_id * self.block_len
+        block_start = start
         block_end = min(block_start + self.block_len, self.num_elems)
         
         byte_offset = self.header_size + block_start * self.row_dtype.itemsize
@@ -185,14 +175,6 @@ class Streamer:
             dtype=self.row_dtype, 
             count=block_end - block_start
         )
-        
-        # Cache management (simple LRU)
-        if len(self._cache) >= self._max_cached_blocks:
-            # Remove oldest cached block
-            oldest_key = next(iter(self._cache))
-            del self._cache[oldest_key]
-        
-        self._cache[block_id] = block_data
         
         # Return requested slice
         local_start = start - block_start

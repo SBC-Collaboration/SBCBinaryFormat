@@ -71,8 +71,8 @@ from sbcbinaryformat import Streamer
 
 streamer = Streamer("example.sbc")
 
-# Check number of rows of the data
-num_rows = len(streamer)
+# Check some info about the streamer
+info_dict = streamer.get_info()
 
 # This will return row 500-2000 as a structured numpy array. Start index is inclusive, and end index exclusive
 data = streamer[500:2000]
