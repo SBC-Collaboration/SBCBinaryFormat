@@ -23,267 +23,240 @@ class Streamer:
     This class manages opening a sbc binary file. It reads the header and 
     saves data into a dictionary of numpy arrays. For large files, it uses
     block-based loading to handle partial reads efficiently.
-
-    :param file: Path to the sbc binary file.
-    :type file: str
-    :param max_size: Maximum size in megabytes of the file to be loaded at once. If the file is larger than this, 
-    it will be read in blocks in the streaming mode. Each block will also be limited to this size. 
-    If max_size is 0, the entire file will be read at once.
+    
+    :param file_name: Path to the SBC binary file
+    :type file_name: str
+    :param max_size: Maximum size in MB to load at once (0 = load all)
     :type max_size: int
-    :param block_size: Number of rows to read at once when file size exceeds max_size.
-    :type block_size: int
+    :param block_len: Number of rows per block for streaming mode
+    :type block_len: int
+    :raises OSError: If the file format is invalid or unsupported endianness
+    :raises ValueError: If the header format is incorrect or incompatible
+    :raises IndexError: If the requested range is out of bounds
+    :raises NotImplementedError: If step slicing is attempted in streaming mode
+    :raises ValueError: If the 'end' and 'length' parameters are used together
+    :raises ValueError: If the 'start' parameter is negative and exceeds file length
+    :raises ValueError: If the 'length' parameter is not positive
+    :raises ValueError: If the 'end' parameter is negative and exceeds file length
     """
-    def __init__(self, file_name, max_size=0, block_size=1000):
-        self.system_endianess = sys.byteorder
+    
+    def __init__(self, file_name, max_size=0, block_len=100):
         self.file_name = file_name
-        self.file_size = os.path.getsize(self.file_name)
+        self.file_size = os.path.getsize(file_name)
         self.max_size_bytes = max_size * 1024 * 1024
-        self.single_read = self.file_size < self.max_size_bytes or max_size == 0
-        self.file_handle = open(self.file_name, "rb")
+        self.block_len = block_len
+
+        # Parse header and setup dtype
+        self._parse_header()
         
-        # Read and check endianess
-        file_endianess_val = np.fromfile(self.file_handle, dtype=np.uint32, count=1)[0]
-        if file_endianess_val == 0x01020304:
-            self.file_endianess = "little"
-        elif file_endianess_val == 0x04030201:
-            self.file_endianess = "big"
-        else:
-            raise OSError(f"Endianess not supported: {file_endianess_val}")
-
-        # Read header length and header string
-        self.header_length = int(np.fromfile(self.file_handle, dtype=np.uint16, count=1)[0])
-        header = self.file_handle.read(self.header_length).decode('ascii')
-        header_items = header.split(';')[:-1]  # last element is empty
-
-        if len(header_items) % 3 != 0:
-            raise OSError("Header format error: items not in multiples of 3")
-
-        num_columns = len(header_items) // 3
-        self.columns = []
-        self.dtypes = []
-        self.sizes = []
-        for i in range(num_columns):
-            name = header_items[i * 3]
-            type_str = header_items[i * 3 + 1]
-            size_str = header_items[i * 3 + 2]
-            self.columns.append(name)
-            self.dtypes.append(sbcstring_to_type(type_str, self.file_endianess))
-            self.sizes.append(list(map(int, size_str.split(','))))
-
-        # Read the expected number of elements (can be 0 if unknown)
-        self.expected_num_elems = np.fromfile(self.file_handle, dtype=np.int32, count=1)[0]
-        self.header_size = self.file_handle.tell()
-
-        # Create a structured dtype from the header info
-        fields = []
-        for col, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
-            # If sizes is [1], store as scalar; otherwise as a subarray.
-            if sizes == [1]:
-                fields.append((col, dtype))
-            else:
-                fields.append((col, dtype, tuple(sizes)))
-        self.row_dtype = np.dtype(fields)
-
-        # Calculate the number of rows by comparing the payload size to the row size.
-        self.payload_size = self.file_size - self.header_size
-        if self.payload_size % self.row_dtype.itemsize != 0:
-            raise OSError("File payload size does not match structured row size")
-        self.num_elems = self.payload_size // self.row_dtype.itemsize
-        if self.expected_num_elems and self.expected_num_elems != self.num_elems:
-            raise OSError("Expected number of elements does not match calculated number")
-
-        # Set up block-based reading parameters
+        # Determine if we can load everything at once
+        self.single_read = (self.file_size < self.max_size_bytes or max_size == 0)
+        
         if self.single_read:
-            self.block_size = self.num_elems
-            # Read all data at once
+            # Load all data immediately
             self.data = np.fromfile(self.file_name, dtype=self.row_dtype, offset=self.header_size)
+            self.file_handle = None
         else:
-            # Calculate appropriate block size
-            line_size_in_bytes = self.row_dtype.itemsize
-            max_block_size_bytes = self.max_size_bytes
-            self.block_size = min(block_size, max_block_size_bytes // line_size_in_bytes)
-            self.block_size = max(1, self.block_size)  # Ensure at least 1 element
+            # Setup for block-based reading
+            self.file_handle = open(self.file_name, "rb")
+            self.data = None
+            self._cache = {}  # Simple LRU-style cache for blocks
+            self._max_cached_blocks = 3
+    
+    def _parse_header(self):
+        """Parse the SBC binary header to extract column information"""
+        with open(self.file_name, "rb") as f:
+            # Read endianness
+            endian_val = np.fromfile(f, dtype=np.uint32, count=1)[0]
+            if endian_val == 0x01020304:
+                self.endianness = "little"
+            elif endian_val == 0x04030201:
+                self.endianness = "big"
+            else:
+                raise OSError(f"Unsupported endianness: {endian_val}")
             
-            # Initialize block-based reading state
-            self._current_block_start = 0
-            self._current_block_end = 0
-            self._block_data = None
-            self.data = None  # Will be set to a view when needed
-
+            # Read header
+            header_length = np.fromfile(f, dtype=np.uint16, count=1)[0]
+            header = f.read(header_length).decode('ascii')
+            header_items = header.split(';')[:-1]  # Remove empty last element
+            
+            if len(header_items) % 3 != 0:
+                raise OSError("Invalid header format")
+            
+            # Parse columns
+            num_columns = len(header_items) // 3
+            self.columns = []
+            fields = []
+            
+            for i in range(num_columns):
+                name = header_items[i * 3]
+                type_str = header_items[i * 3 + 1]
+                size_str = header_items[i * 3 + 2]
+                
+                self.columns.append(name)
+                dtype = self._parse_dtype(type_str)
+                sizes = list(map(int, size_str.split(',')))
+                
+                # Build numpy dtype field
+                if sizes == [1]:
+                    fields.append((name, dtype))
+                else:
+                    fields.append((name, dtype, tuple(sizes)))
+            
+            self.row_dtype = np.dtype(fields)
+            
+            # Skip expected number of elements (we'll calculate it)
+            f.seek(4, 1)
+            self.header_size = f.tell()
+            
+            # Calculate actual number of elements
+            payload_size = self.file_size - self.header_size
+            if payload_size % self.row_dtype.itemsize != 0:
+                raise OSError("File size mismatch with row structure")
+            
+            self.num_elems = payload_size // self.row_dtype.itemsize
+    
+    def _parse_dtype(self, type_str):
+        """Convert SBC type string to numpy dtype"""
+        if type_str.startswith('string'):
+            endian_char = '<' if self.endianness == 'little' else '>'
+            return np.dtype(endian_char + type_str.replace("string", "U"))
+        
+        return sbcstring_to_type(type_str, self.endianness) 
+    
     def __getitem__(self, idx):
+        """Get data by index or slice"""
         if self.single_read:
             return self.data[idx]
         else:
-            # For partial reads, ensure the requested data is in memory
+            # Handle streaming mode
             if isinstance(idx, (int, np.integer)):
                 if idx < 0:
-                    idx = self.num_elems + idx  # Handle negative indices
-                self._ensure_data_in_memory(idx, idx + 1)
-                local_idx = idx - self._current_block_start
-                return self._block_data[local_idx]
+                    idx = self.num_elems + idx
+                return self._get_block_data(idx, idx + 1)[0]
+            
             elif isinstance(idx, slice):
                 start, stop, step = idx.indices(self.num_elems)
                 if step != 1:
-                    raise NotImplementedError("Step slicing not supported for partial reads")
-                self._ensure_data_in_memory(start, stop)
-                local_start = start - self._current_block_start
-                local_stop = stop - self._current_block_start
-                return self._block_data[local_start:local_stop]
+                    raise NotImplementedError("Step slicing not supported in streaming mode")
+                return self._get_range_data(start, stop)
+            
             else:
                 raise TypeError(f"Unsupported index type: {type(idx)}")
-
-    def _ensure_data_in_memory(self, start_idx, end_idx):
-        """Ensure that data from start_idx to end_idx is loaded in memory"""
-        if (start_idx >= self._current_block_start and 
-            end_idx <= self._current_block_end):
-            # Data already in memory
-            return
+    
+    def _get_range_data(self, start, stop):
+        """Get data for a range, potentially spanning multiple blocks"""
+        if stop - start <= self.block_len:
+            # Single block read
+            return self._get_block_data(start, stop)
         
-        # Need to load new block
-        self._load_block(start_idx)
-
-    def _load_block(self, start_idx):
-        """Load a block of data starting at start_idx"""
-        # Calculate the actual block boundaries
-        block_start = max(0, start_idx)
-        block_end = min(self.num_elems, block_start + self.block_size)
+        # Multi-block read - concatenate blocks
+        data_parts = []
+        current = start
         
-        # Seek to the correct position in the file
+        while current < stop:
+            block_end = min(current + self.block_len, stop)
+            block_data = self._get_block_data(current, block_end)
+            data_parts.append(block_data)
+            current = block_end
+        
+        return np.concatenate(data_parts)
+    
+    def _get_block_data(self, start, stop):
+        """Get data for a single block with caching"""
+        block_id = start // self.block_len
+        
+        # Check cache first
+        if block_id in self._cache:
+            block_data = self._cache[block_id]
+            local_start = start % self.block_len
+            local_stop = local_start + (stop - start)
+            return block_data[local_start:local_stop]
+        
+        # Load block from file
+        block_start = block_id * self.block_len
+        block_end = min(block_start + self.block_len, self.num_elems)
+        
         byte_offset = self.header_size + block_start * self.row_dtype.itemsize
         self.file_handle.seek(byte_offset)
         
-        # Read the block
-        num_elements = block_end - block_start
-        self._block_data = np.fromfile(self.file_handle, dtype=self.row_dtype, count=num_elements)
+        block_data = np.fromfile(
+            self.file_handle, 
+            dtype=self.row_dtype, 
+            count=block_end - block_start
+        )
         
-        # Update the current block boundaries
-        self._current_block_start = block_start
-        self._current_block_end = block_end
+        # Cache management (simple LRU)
+        if len(self._cache) >= self._max_cached_blocks:
+            # Remove oldest cached block
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+        
+        self._cache[block_id] = block_data
+        
+        # Return requested slice
+        local_start = start - block_start
+        local_stop = local_start + (stop - start)
+        return block_data[local_start:local_stop]
+    
+    def to_dict(self, start=None, end=None, length=None):
+        """
+        Convert data to dictionary of arrays
+        
+        :param start: Start index for range (inclusive). If not provided, defaults to the beginning of the data.
+        :param end: End index for range (exclusive). If not provided, defaults to the end of the data.
+        :param length: Number of elements to read starting from start. Cannot be used together with end.
+        """
+        # Validate parameter combinations
+        if end is not None and length is not None:
+            raise ValueError("Cannot specify both 'end' and 'length' parameters")
+        
+        # Handle start/end/length parameters
+        if start is not None or end is not None or length is not None:
+            if start is None:
+                start = 0
+            
+            # Calculate end based on length if provided
+            if length is not None:
+                if length <= 0:
+                    raise ValueError("Length must be positive")
+                end = start + length
+            elif end is None:
+                end = self.num_elems
+            
+            # Validate indices
+            if start < 0:
+                start = self.num_elems + start
+            if end < 0:
+                end = self.num_elems + end
+            if start < 0 or end > self.num_elems or start >= end:
+                raise IndexError(f"Invalid range: start={start}, end={end} for length {self.num_elems}")
+            data = self[start:end]
+        else:
+            data = self[:]
 
-    def load_next_block(self):
-        """
-        Load the next consecutive block of data.
-        
-        :returns: True if a next block was loaded, False if already at the end
-        :rtype: bool
-        """
-        if self.single_read:
-            # In single read mode, all data is already loaded
-            return False
-        
-        if self._block_data is None:
-            # No block loaded yet, load the first block
-            self._load_block(0)
-            return True
-        
-        # Calculate the start of the next block
-        next_block_start = self._current_block_end
-        
-        if next_block_start >= self.num_elems:
-            # Already at the end of the file
-            return False
-        
-        # Load the next block
-        self._load_block(next_block_start)
-        return True
-
-    def load_previous_block(self):
-        """
-        Load the previous consecutive block of data.
-        
-        :returns: True if a previous block was loaded, False if already at the beginning
-        :rtype: bool
-        """
-        if self.single_read:
-            # In single read mode, all data is already loaded
-            return False
-        
-        if self._block_data is None:
-            # No block loaded yet, load the first block
-            self._load_block(0)
-            return True
-        
-        # Calculate the start of the previous block
-        prev_block_start = self._current_block_start - self.block_size
-        
-        if prev_block_start < 0:
-            # Already at the beginning of the file
-            return False
-        
-        # Load the previous block
-        self._load_block(prev_block_start)
-        return True
-
-    def get_current_block_info(self):
-        """
-        Get information about the currently loaded block.
-        
-        :returns: Dictionary with block information: Start index (inclusive), 
-        end index (exclusive), size, and mode (single_read or partial_read).
-        :rtype: dict or None
-        """
-        if self.single_read:
-            return {
-                'start': 0,
-                'end': self.num_elems,
-                'size': self.num_elems,
-                'mode': 'single_read'
-            }
-        
-        if self._block_data is None:
-            return None
-        
-        return {
-            'start': self._current_block_start,
-            'end': self._current_block_end,
-            'size': self._current_block_end - self._current_block_start,
-            'mode': 'partial_read'
-        }
-
-    def __enter__(self):
-        """Allow use with 'with' statement"""
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        """Properly close file resources"""
-        if self.file_handle:
-            self.file_handle.close()
+        return OrderedDict({name: np.array(data[name]) for name in self.columns})
 
     def __len__(self):
         return self.num_elems
-
-    def to_dict(self, partial_dict=False):
-        """
-        Convert the structured array into a dictionary for easier access.
-
-        :param partial_dict: If True, and if the file cannot be read in one go,
-        it will only return a dictionary of the data currently in memory.
-        If False, it will still convert the entire binary file into a python dictionary.
-        :type partial_dict: bool
-        """
-        if self.single_read:
-            return OrderedDict({name: self.data[name] for name in self.columns})
-        elif not partial_dict:
-            # Partial dictionary is disabled. Returning the entire file content.
-            all_data = np.fromfile(self.file_name, dtype=self.row_dtype, offset=self.header_size)
-            return OrderedDict({name: all_data[name] for name in self.columns})
-        elif self._block_data is not None:
-            # Returning the currently loaded block data.
-            return OrderedDict({name: self._block_data[name] for name in self.columns})
-        elif self.num_elems > 0:
-            # No data loaded yet, returning data of the first block.
-            self._load_block(0)
-            return OrderedDict({name: self._block_data[name] for name in self.columns})
-        else:
-            # File is empty, returning empty dictionary.
-            empty_dict = OrderedDict()
-            for name, dtype, sizes in zip(self.columns, self.dtypes, self.sizes):
-                if sizes == [1]:
-                    empty_dict[name] = np.array([], dtype=dtype)
-                else:
-                    shape = (0,) + tuple(sizes)
-                    empty_dict[name] = np.empty(shape, dtype=dtype)
-            return empty_dict
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.file_handle:
+            self.file_handle.close()
+    
+    # Utility methods for inspection
+    def get_info(self):
+        """Get file and streaming information"""
+        return {
+            'file_size': self.file_size,
+            'num_elements': self.num_elems,
+            'columns': self.columns,
+            'single_read': self.single_read,
+            'block_size': self.block_len if not self.single_read else self.num_elems
+        }
 
 
 class Writer:
@@ -478,6 +451,12 @@ and sizes ({sizes})")
             if file_endianess not in (0x1020304, 0x4030201):
                 raise OSError(f"Endianess not supported: 0x{file_endianess:X}")
 
+            # Convert endianness value to string
+            if file_endianess == 0x01020304:
+                file_endianess_str = 'little'
+            else:  # 0x04030201
+                file_endianess_str = 'big'
+
             self.correct_for_endian = False
             if (file_endianess == 0x04030201
                 and self.system_endianess == 'little') \
@@ -508,7 +487,7 @@ and sizes ({sizes})")
                     {columns_names}")
                 return False
 
-            self.dtypes = np.array([sbcstring_to_type(type_s, file)
+            self.dtypes = np.array([sbcstring_to_type(type_s, file_endianess_str)
                            for type_s in header[:, 1]])
 
             np_dtypes = [np.dtype(dtype) for dtype in dtypes]
@@ -583,7 +562,7 @@ def type_to_sbcstring(sbc_type_str):
 if __name__ == "__main__":
     # Writer example
     with Writer(
-        "example.sbc.bin",
+        "example.sbc",
         ["t", "x", "y", "z", "momentum", "source"],
         ['i4', 'd', 'd', 'd', 'd', "U100"],
         [[1], [1], [1], [1], [3, 2], [1]]) as example_writer:
@@ -610,7 +589,7 @@ if __name__ == "__main__":
         example_writer.write(data)
     
     # Reader example
-    example_streamer = Streamer("example.sbc.bin")
+    example_streamer = Streamer("example.sbc")
     data_dict = example_streamer.to_dict()
     for key, value in data_dict.items():
         print(f"key: {key}\t shape: {value.shape}")

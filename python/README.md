@@ -31,14 +31,14 @@ The `Writer` class initializes with 4 parameters:
 ```python
 from sbcbinaryformat import Writer
 
-file_name = "example.sbc.bin"
+file_name = "example.sbc"
 column_names = ["t", "x", "y", "z", "momentum", "source"]
 data_types = ['i4', 'd', 'd', 'd', 'd', "U100"]
 sizes = [[1], [1], [1], [1], [3, 2], [1]]
 
 example_writer = Writer(file_name, column_names, data_types, sizes)
 ```
-Then prepare data into a dictionary, matching the description provided above. Use `Writer.write()` to write the data to file. If the files doesn't exist, it will be created. Writing multiple times will append to the end of file.
+Then prepare data into a dictionary, matching the description provided above. Use `Writer.write()` to write the data to file. If the file doesn't exist, it will be created. Writing multiple times will append to the end of file.
 ```python
 data = {
     't': [1],
@@ -64,14 +64,44 @@ data = {
 example_writer.write(data)
 ```
 
-### Reader example
-The `Streamer` class can be initialized with only the path to the binary file. Use `Streamer.to_dict()` to convert the data into a python dictionary for easier handling.
+### Streamer example
+The `Streamer` class can be initialized with only the path to the binary file. Use `Streamer.to_dict()` to convert the data into a python dictionary for easier handling. The default behavior would load the entire file into memory, as shown below.
 ```python
 from sbcbinaryformat import Streamer
 
-example_streamer = Streamer("example.sbc.bin")
-data_dict = example_streamer.to_dict()
+streamer = Streamer("example.sbc")
+
+# Check number of rows of the data
+num_rows = len(streamer)
+
+# This will return row 500-2000 as a structured numpy array. Start index is inclusive, and end index exclusive
+data = streamer[500:2000]
+
+# Convert the entire file into a python dictionary
+data_dict = streamer.to_dict()
 for key, value in data_dict.items():
     print(f"key: {key}\t shape: {value.shape}")
     print(value[:10])
+```
+
+It is also possible to operate in the streaming mode, where only a block of data will be read at a time. This mode has two relevant paramters: `max_size` in MB decides the amount of data that be read into memory at a time, and `block_len` sets the max number of rows that can be read each time. If the file is smaller than `max_size`, then the whole file will be read into memory. If data in `block_len` is larger than `max_size`, then `block_len` will be automatically reduced so the size is below `max_size`. If the requested slice is larger than `block_len`, more than one block will be read and combined.
+```python
+# Read 10MB in a block, and at most 1000 lines
+streamer = Streamer("example.sbc", max_size=10, block_len=1000)
+
+# This will read row 500-1500 into memory, and return row 500 of the file as a structured numpy array
+data = streamer[500]
+# This will read row 500-1500 as one block, and row 1500-2000 as the second block, and return row 500-2000 as an array
+data = streamer[500:2000]
+
+# This will return a dictionary of the entire file
+data_dict = streamer.to_dict()
+# Both will return from the start of the file to row 500
+data_dict = streamer.to_dict(end=500)
+data_dict = streamer.to_dict(length=500)
+# From row 500 to the end of the file
+data_dict = streamer.to_dict(start=500)
+# Both of the below will return Row 500-1500
+data_dict = streamer.to_dict(start=500, end=1500)
+data_dict = streamer.to_dict(start=500, length=1000)
 ```
