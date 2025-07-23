@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sbcbinaryformat"
-version = "0.3.3"
+version = "0.4.0"
 description = "SBC Binary Format library"
 authors = [{name = "Hector Hawley Herrera"},
            {name = "Zhiheng Sheng"}]
