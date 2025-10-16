@@ -11,6 +11,7 @@ import os
 import numpy as np
 from collections import OrderedDict
 from importlib.metadata import version, PackageNotFoundError
+import warnings
 
 # expose package version
 try:
@@ -110,7 +111,12 @@ class Streamer:
             # Calculate actual number of elements
             payload_size = self.file_size - self.header_size
             if payload_size % self.row_dtype.itemsize != 0:
-                raise OSError("File size mismatch with row structure")
+                # Instead of raising an error, warn the user and proceed.
+                warnings.warn(
+                    f"File '{self.file_name}' may be truncated or corrupted. "
+                    "The last partial row will be ignored.",
+                    UserWarning
+                )
             
             self.num_elems = payload_size // self.row_dtype.itemsize
             self.block_len = min(self.block_len, self.max_size_bytes // self.row_dtype.itemsize)
