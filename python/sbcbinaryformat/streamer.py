@@ -1,7 +1,7 @@
-import sys
 import os
 import numpy as np
 from collections import OrderedDict
+from .utilities import sbcstring_to_type, type_to_sbcstring
 import warnings
 
 class Streamer:
