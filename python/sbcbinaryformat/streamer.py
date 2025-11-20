@@ -1,8 +1,9 @@
 import os
 import numpy as np
 from collections import OrderedDict
-from .utilities import sbcstring_to_type, type_to_sbcstring
+from .utilities import sbcstring_to_type, type_to_sbcstring, is_gzip_file
 import warnings
+import gzip
 
 class Streamer:
     """
@@ -12,10 +13,12 @@ class Streamer:
     
     :param file_name: Path to the SBC binary file
     :type file_name: str
-    :param max_size: Maximum size in MB to load at once (0 = load all)
+    :param max_size: Maximum size in MB to load at once (0 = load all). This is ignored for compressed files.
     :type max_size: int
     :param block_len: Number of rows per block for streaming mode
     :type block_len: int
+    :param compressed: Whether the file is gzip compressed
+    :type compressed: bool
     :raises OSError: If the file format is invalid or unsupported endianness
     :raises ValueError: If the header format is incorrect or incompatible
     :raises IndexError: If the requested range is out of bounds
@@ -26,32 +29,54 @@ class Streamer:
     :raises ValueError: If the 'end' parameter is negative and exceeds file length
     """
     
-    def __init__(self, file_name, max_size=0, block_len=100):
+    def __init__(self, file_name, max_size=0, block_len=100, compressed=False):
         self.file_name = file_name
         self.file_size = os.path.getsize(file_name)
         self.max_size_bytes = max_size * 1024 * 1024
         self.block_len = block_len
+        self.compressed = compressed
+
+        if self.compressed and max_size > 0:
+            warnings.warn(
+                f"File '{self.file_name}' is compressed. "
+                "The 'max_size' parameter will be ignored and the entire file will be decompressed into memory.",
+                UserWarning
+            )
+
+        file_is_gzipped = is_gzip_file(file_name)
+        if self.compressed and not file_is_gzipped:
+            self.compressed = False
+            warnings.warn(f"File '{file_name}' is not gzip compressed as expected. Disabling compression.", UserWarning)
+        elif not self.compressed and file_is_gzipped:
+            self.compressed = True
 
         # Parse header and setup dtype
+        self.open_func = gzip.open if self.compressed else open
         self._parse_header()
         
         # Determine if we can load everything at once
-        self.single_read = (self.file_size < self.max_size_bytes or max_size == 0)
+        # If compressed file, always load all data at once
+        self.single_read = (self.file_size < self.max_size_bytes or max_size == 0 or self.compressed)
         
-        if self.single_read:
+        if self.compressed:
             # Load all data immediately
-            self.data = np.fromfile(self.file_name, dtype=self.row_dtype, offset=self.header_size)
+            self.data = np.frombuffer(self.decompressed_buffer, dtype=self.row_dtype)
+            self.decompressed_buffer = None
+            self.file_handle = None
+        elif self.single_read:
+            with self.open_func(self.file_name, "rb") as f:
+                self.data = np.frombuffer(f.read(), dtype=self.row_dtype, offset=self.header_size)
             self.file_handle = None
         else:
             # Setup for block-based reading
-            self.file_handle = open(self.file_name, "rb")
+            self.file_handle = self.open_func(self.file_name, "rb")
             self.data = None
     
     def _parse_header(self):
         """Parse the SBC binary header to extract column information"""
-        with open(self.file_name, "rb") as f:
+        with self.open_func(self.file_name, "rb") as f:
             # Read endianness
-            endian_val = np.fromfile(f, dtype=np.uint32, count=1)[0]
+            endian_val = np.frombuffer(f.read(4), dtype=np.uint32)[0]
             if endian_val == 0x01020304:
                 self.endianness = "little"
             elif endian_val == 0x04030201:
@@ -59,8 +84,9 @@ class Streamer:
             else:
                 raise OSError(f"Unsupported endianness: {endian_val}")
             
-            # Read header
-            header_length = np.fromfile(f, dtype=np.uint16, count=1)[0]
+            # Read header            
+            endian_char = '<' if self.endianness == 'little' else '>'
+            header_length = np.frombuffer(f.read(2), dtype=f"{endian_char}u2")[0]
             header = f.read(header_length).decode('ascii')
             header_items = header.split(';')[:-1]  # Remove empty last element
             
@@ -92,17 +118,21 @@ class Streamer:
             # Skip expected number of elements (we'll calculate it)
             f.seek(4, 1)
             self.header_size = f.tell()
-            
-            # Calculate actual number of elements
-            payload_size = self.file_size - self.header_size
-            if payload_size % self.row_dtype.itemsize != 0:
-                # Instead of raising an error, warn the user and proceed.
-                warnings.warn(
-                    f"File '{self.file_name}' may be truncated or corrupted. "
-                    "The last partial row will be ignored.",
-                    UserWarning
-                )
-            
+
+            if self.compressed:
+                self.decompressed_buffer = f.read()
+                payload_size = len(self.decompressed_buffer)
+            else:
+                # Calculate actual number of elements
+                payload_size = self.file_size - self.header_size
+                if payload_size % self.row_dtype.itemsize != 0:
+                    # Instead of raising an error, warn the user and proceed.
+                    warnings.warn(
+                        f"File '{self.file_name}' may be truncated or corrupted. "
+                        "The last partial row will be ignored.",
+                        UserWarning
+                    )
+                
             self.num_elems = payload_size // self.row_dtype.itemsize
             self.block_len = min(self.block_len, self.max_size_bytes // self.row_dtype.itemsize)
     
@@ -154,6 +184,10 @@ class Streamer:
     
     def _get_block_data(self, start, stop):
         """Get data for a single block"""
+        # handle the case where all data is already loaded
+        if self.single_read:
+            return self.data[start:stop]
+        
         # Load block from file
         block_start = start
         block_end = min(block_start + self.block_len, self.num_elems)

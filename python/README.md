@@ -105,3 +105,8 @@ data_dict = streamer.to_dict(start=500)
 data_dict = streamer.to_dict(start=500, end=1500)
 data_dict = streamer.to_dict(start=500, length=1000)
 ```
+
+## Compressed files
+Both the writer and streamer classes support compressed files via python `gzip` library. However, since compressed files do not support random seeking, it has some limitations, including
+- The streamer does not support streaming or slicing. The entire file is read into memory at once.
+- The writer does not support appending to existing compressed file. If attempting to save to an existing file, an error will be raised.

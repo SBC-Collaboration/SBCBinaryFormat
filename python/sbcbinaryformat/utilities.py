@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 def sbcstring_to_type(type_str, endianess):
     out_type_str = ""
@@ -45,3 +46,10 @@ def type_to_sbcstring(sbc_type_str):
                       'f16': 'float128'}
 
     return string_to_type[sbc_type_str]
+
+def is_gzip_file(filepath):
+    """Check if a file is actually gzip compressed by reading magic bytes."""
+    if not os.path.exists(filepath) or os.path.getsize(filepath) < 2:
+        return False
+    with open(filepath, 'rb') as f:
+        return f.read(2) == b'\x1f\x8b'

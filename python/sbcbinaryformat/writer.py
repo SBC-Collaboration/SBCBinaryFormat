@@ -1,7 +1,10 @@
 import sys
 import os
 import numpy as np
-from .utilities import sbcstring_to_type, type_to_sbcstring
+from .utilities import sbcstring_to_type, type_to_sbcstring, is_gzip_file
+from .streamer import Streamer
+import warnings
+import gzip
 
 class Writer:
     """
@@ -14,32 +17,57 @@ class Writer:
      * Contains the structure of each line. It is always found as a raw
      * string in the form "{name_col};{type_col};{size1},{size2}...;...;
      * Cannot be longer than 65536 bytes.
-     * 4.- Number of lines     - always 4 bits long (int32_t)
-     * Number of lines in the file. If 0, it is indefinitely long.
+     * 4.- Number of lines     - always 4 bytes long (int32_t)
+     * Number of lines in the file. If 0, it is indefinitely long. 
+     * This is not implemented, always 0.
     """
 
-    def __init__(self, file_name, columns_names, dtypes, sizes):
+    def __init__(self, file_name, columns_names, dtypes, sizes, compression=False):
         self.file_name = file_name
         self.num_elems_saved = 0
         self.system_endianess = sys.byteorder
+        self.compression = compression
+
+        # If file exists, detect actual format and override compression flag
+        if os.path.exists(file_name) and os.path.getsize(file_name) > 0:
+            file_is_gzip = is_gzip_file(file_name)
+            if file_is_gzip != self.compression:
+                self.compression = file_is_gzip
+                warnings.warn(f"Compression flag changed to {file_is_gzip} to match existing file format")
+            if self.compression:
+                raise NotImplementedError("Appending to existing gzip files is not supported.")
+            
+        # For new files, ensure extension matches compression flag
+        else:
+            if self.compression and not file_name.endswith('.gz'):
+                self.file_name += '.gz'
+                warnings.warn(f"Added .gz extension. File will be saved as {self.file_name}")
+            elif not self.compression and file_name.endswith('.gz'):
+                self.compression = True
+                warnings.warn(f"File name ends with .gz. Enabling compression.", UserWarning)
+
+        self.open_func = gzip.open if self.compression else open
 
         if len(columns_names) != len(dtypes):
             raise ValueError("columns names and dtypes should be of the \
 same length")
 
         # if does not exist OR its size is 0, we create the header
-        if not os.path.exists(file_name) or os.path.getsize(file_name) == 0:
-            self.__create_header(file_name, columns_names, dtypes, sizes)
+        if not os.path.exists(self.file_name) or os.path.getsize(self.file_name) == 0:
+            self.__create_header(columns_names, dtypes, sizes)
         # Otherwise, we read the header and check whenever is compatible with
         # current parameters
         else:
-            if not self.__has_compatible_header(file_name, columns_names,
+            if not self.__has_compatible_header(columns_names,
                                                 dtypes, sizes):
                 raise ValueError(f"Header of already existing file must match \
 columns_names ({columns_names}), dtypes ({dtypes}), \
 and sizes ({sizes})")
 
-            self.file_resource = open(file_name, 'ab')
+            if self.compression:
+                self.file_resource = gzip.open(self.file_name, 'ab')
+            else:
+                self.file_resource = open(self.file_name, 'ab')
 
     def __len__(self):
         return self.num_elems_saved
@@ -152,13 +180,20 @@ and sizes ({sizes})")
             rec[k] = arrays[k]
 
         # Write the entire block at once.
-        rec.tofile(self.file_resource)
+        if self.compression:
+            self.file_resource.write(rec.tobytes())
+        else:
+            rec.tofile(self.file_resource)
+        
         self.num_elems_saved += nrows
 
-    def __create_header(self, file_name, columns_names, dtypes, sizes):
-        self.file_resource = open(file_name, 'wb')
+    def __create_header(self, columns_names, dtypes, sizes):
+        if self.compression:
+            self.file_resource = gzip.open(self.file_name, 'wb')
+        else:
+            self.file_resource = open(self.file_name, 'wb')
         # first endianess
-        np.array(0x01020304, dtype='u4').tofile(self.file_resource)
+        self.file_resource.write(np.array(0x01020304, dtype='u4').tobytes())
 
         # then we need two things: the header and its length
         self.header = ""
@@ -176,21 +211,20 @@ and sizes ({sizes})")
             self.header += f"{column_name};{type_to_sbcstring(dtype)};{header_str};"
 
         self.header_length = len(self.header)
-        np.array(self.header_length, dtype='u2').tofile(self.file_resource)
+        self.file_resource.write(np.array(self.header_length, dtype='u2').tobytes())
 
         self.file_resource.write(self.header.encode('ascii'))
 
-        np.array(0, dtype='i4').tofile(self.file_resource)
-
+        self.file_resource.write(np.array(0, dtype='i4').tobytes())
         self.columns = np.array(columns_names)
         self.dtypes = np.array(dtypes)
         self.sizes = sizes
 
-    def __has_compatible_header(self, file_name, columns_names, dtypes, sizes):
+    def __has_compatible_header(self, columns_names, dtypes, sizes):
         # open the file for read only
-        with open(file_name, "rb") as file:
-            file_endianess = np.fromfile(file,
-                                         dtype=np.uint32, count=1)[0]
+        with self.open_func(self.file_name, "rb") as file:
+            file_endianess = np.frombuffer(file.read(4),
+                                         dtype=np.uint32)[0]
 
             if file_endianess not in (0x1020304, 0x4030201):
                 raise OSError(f"Endianess not supported: 0x{file_endianess:X}")
@@ -209,9 +243,8 @@ and sizes ({sizes})")
                 self.correct_for_endian = True
 
             # Now the length of the header
-            self.header_length = np.fromfile(file,
-                                             dtype=np.uint16,
-                                             count=1)[0]
+            self.header_length = np.frombuffer(file.read(2),
+                                             dtype=np.uint16)[0]
 
             header = file.read(self.header_length).decode('ascii')
             header = header.split(';')
