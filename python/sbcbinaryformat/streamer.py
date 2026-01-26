@@ -105,7 +105,14 @@ class Streamer:
                 
                 self.columns.append(name)
                 dtype = self._parse_dtype(type_str)
-                sizes = list(map(int, size_str.split(',')))
+                
+                # Parse and validate sizes
+                sizes = []
+                for size_part in size_str.split(','):
+                    size_num = float(size_part)
+                    if not size_num.is_integer():
+                        raise ValueError(f"Size must be an integer, column '{name}' has size {size_num}.")
+                    sizes.append(int(size_num))
                 
                 # Build numpy dtype field
                 if sizes == [1]:

@@ -199,14 +199,18 @@ and sizes ({sizes})")
         self.header = ""
         for column_name, dtype, size in zip(columns_names, dtypes, sizes):
             header_str = ""
-            if isinstance(size, int):
-                header_str = f"{size}"
-            else:
+            if isinstance(size, list):
                 for i, size_i in enumerate(size):
+                    if not size_i.is_integer():
+                        raise ValueError(f"Size must be an integer, column '{column_name}' has size {size_i}.")
                     if i == 0:
-                        header_str += f"{size_i}"
+                        header_str += f"{int(size_i)}"
                     else:
-                        header_str += f",{size_i}"
+                        header_str += f",{int(size_i)}"
+            else:
+                if not size.is_integer():
+                    raise ValueError(f"Size must be an integer, got {size} in column '{column_name}'")
+                header_str = f"{int(size)}"
 
             self.header += f"{column_name};{type_to_sbcstring(dtype)};{header_str};"
 
