@@ -31,7 +31,16 @@ class Streamer:
     
     def __init__(self, file_name, max_size=0, block_len=100, compressed=False):
         self.file_name = file_name
+        if not os.path.exists(file_name):
+            raise FileNotFoundError(f"File '{file_name}' does not exist.")
+        
         self.file_size = os.path.getsize(file_name)
+        min_size = 11  # Minimum size to hold header info
+        if self.file_size == 0:
+            raise ValueError(f"File '{file_name}' is empty.")
+        elif self.file_size < min_size:
+            raise ValueError(f"File '{file_name}' is too small to contain valid SBC binary data.")
+
         self.max_size_bytes = max_size * 1024 * 1024
         self.block_len = block_len
         self.compressed = compressed
@@ -76,7 +85,11 @@ class Streamer:
         """Parse the SBC binary header to extract column information"""
         with self.open_func(self.file_name, "rb") as f:
             # Read endianness
-            endian_val = np.frombuffer(f.read(4), dtype=np.uint32)[0]
+            endian_bytes = f.read(4)
+            if len(endian_bytes) < 4:
+                raise OSError("File header corrupted or incomplete: missing endianness.")
+            
+            endian_val = np.frombuffer(endian_bytes, dtype=np.uint32)[0]
             if endian_val == 0x01020304:
                 self.endianness = "little"
             elif endian_val == 0x04030201:
@@ -84,10 +97,18 @@ class Streamer:
             else:
                 raise OSError(f"Unsupported endianness: {endian_val}")
             
-            # Read header            
+            # Read header length
             endian_char = '<' if self.endianness == 'little' else '>'
-            header_length = np.frombuffer(f.read(2), dtype=f"{endian_char}u2")[0]
-            header = f.read(header_length).decode('ascii')
+            header_length_bytes = f.read(2)
+            if len(header_length_bytes) < 2:
+                raise OSError("File header corrupted or incomplete: missing header length.")
+            header_length = np.frombuffer(header_length_bytes, dtype=f"{endian_char}u2")[0]
+
+            # read header content
+            header_bytes = f.read(header_length)
+            if len(header_bytes) < header_length:
+                raise OSError("File header corrupted or incomplete: missing header content.")
+            header = header_bytes.decode('ascii')
             header_items = header.split(';')[:-1]  # Remove empty last element
             
             if len(header_items) % 3 != 0:
