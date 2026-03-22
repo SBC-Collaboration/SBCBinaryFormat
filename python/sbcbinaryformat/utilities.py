@@ -11,15 +11,16 @@ def sbcstring_to_type(type_str, endianess):
     if type_str.startswith('string'):
         return np.dtype(out_type_str+type_str.replace("string", "U"))
 
-    string_to_type = {'char': 'i1',
-                      'int8': 'i1',
-                      'int16': 'i2',
-                      'int32': 'i4',
-                      'int64': 'i8',
+    string_to_type = {'bool': 'b1',
                       'uint8': 'u1',
                       'uint16': 'u2',
                       'uint32': 'u4',
                       'uint64': 'u8',
+                      'char': 'i1',
+                      'int8': 'i1',
+                      'int16': 'i2',
+                      'int32': 'i4',
+                      'int64': 'i8',
                       'single': 'f',
                       'float32': 'f',
                       'double': 'd',
@@ -33,14 +34,15 @@ def type_to_sbcstring(sbc_type_str):
     if sbc_type_str.startswith("U"):
         return sbc_type_str.replace("U", "string")
 
-    string_to_type = {'i1': 'int8',
-                      'i2': 'int16',
-                      'i4': 'int32',
-                      'i8': 'int64',
+    string_to_type = {'b1': 'bool',
                       'u1': 'uint8',
                       'u2': 'uint16',
                       'u4': 'uint32',
                       'u8': 'uint64',
+                      'i1': 'int8',
+                      'i2': 'int16',
+                      'i4': 'int32',
+                      'i8': 'int64',
                       'f': 'float32',
                       'd': 'double',
                       'f16': 'float128'}
