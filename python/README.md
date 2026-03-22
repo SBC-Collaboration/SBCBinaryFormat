@@ -3,6 +3,17 @@
 Use this library either directly (copy sbcbinaryformat.py into your source code) or install it as a library. 
 
 ## How to install using `pip`
+1. (Optional) If using conda environments, activate your target environment.
+2. If this package has already been installed, or if you are not sure, force a fresh upgrade by
+```
+pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/SBC-Collaboration/SBCBinaryFormat.git@master#subdirectory=python"
+```
+If you are sure this package has not been installed, simply run (but the above should still work)
+```
+pip install "git+https://github.com/SBC-Collaboration/SBCBinaryFormat.git@master#subdirectory=python"
+```
+
+## How to install after cloning using `pip`
 1. Clone this repository to your local machine: `git clone https://github.com/SBC-Collaboration/SBCBinaryFormat.git`.
 2. (Optional) If using conda environments, activate your target environment.
 3. Make sure dependencies such as `pip`, `wheel`, `setuptools`, and `numpy` are installed.
